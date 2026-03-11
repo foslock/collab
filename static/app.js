@@ -26,6 +26,10 @@
   // Persisted lines: array of { id, session_id, color, points }
   let lines = [];
 
+  // Lines currently fading out: { color, points, start, duration }
+  let fadingLines = [];
+  const FADE_DURATION = 350; // ms
+
   // In-progress remote draws: session_id -> { color, points }
   const remoteDraws = {};
 
@@ -74,6 +78,23 @@
   }
 
   // ── Drawing ────────────────────────────────────────────────────────────
+  function fadeOutLines(toFade) {
+    if (toFade.length === 0) return;
+    const now = performance.now();
+    for (const line of toFade) {
+      fadingLines.push({ color: line.color, points: line.points, start: now, duration: FADE_DURATION });
+    }
+    requestAnimationFrame(animateFades);
+  }
+
+  function animateFades() {
+    if (fadingLines.length === 0) return;
+    const now = performance.now();
+    fadingLines = fadingLines.filter(f => now - f.start < f.duration);
+    draw();
+    if (fadingLines.length > 0) requestAnimationFrame(animateFades);
+  }
+
   function drawLine(pts, color) {
     if (pts.length < 2) return;
     ctx.beginPath();
@@ -122,6 +143,16 @@
     // persisted lines
     for (const line of lines) {
       drawLine(line.points, line.color);
+    }
+
+    // fading lines
+    const now = performance.now();
+    for (const f of fadingLines) {
+      const elapsed = now - f.start;
+      const alpha = Math.max(0, 1 - elapsed / f.duration);
+      ctx.globalAlpha = alpha;
+      drawLine(f.points, f.color);
+      ctx.globalAlpha = 1;
     }
 
     // remote in-progress draws
@@ -437,11 +468,25 @@
 
   document.getElementById("btn-undo").onclick = () => {
     wsSend({ type: "undo_last_line" });
+    // Optimistic: fade out the last line by this user
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].session_id === sessionId) {
+        fadeOutLines([lines[i]]);
+        lines.splice(i, 1);
+        draw();
+        break;
+      }
+    }
   };
 
   document.getElementById("btn-delete").onclick = () => {
     if (!confirm("Delete all your drawings?")) return;
     wsSend({ type: "delete_my_lines" });
+    // Optimistic: fade out all lines by this user
+    const mine = lines.filter(l => l.session_id === sessionId);
+    lines = lines.filter(l => l.session_id !== sessionId);
+    fadeOutLines(mine);
+    draw();
   };
 
   const helpOverlay = document.getElementById("help-overlay");
@@ -529,6 +574,10 @@
   clearCanvasBtn.onclick = () => {
     if (!confirm("Clear ALL drawings on this canvas from ALL users?")) return;
     wsSend({ type: "clear_canvas" });
+    // Optimistic: fade out all lines immediately
+    fadeOutLines(lines);
+    lines = [];
+    draw();
   };
 
   // Canvas hash in dropdown — click to copy URL
@@ -555,6 +604,7 @@
 
     // Clear canvas state
     lines = [];
+    fadingLines = [];
     for (const sid of Object.keys(remoteDraws)) delete remoteDraws[sid];
     removeAllCursors();
     for (const sid of Object.keys(userPills)) {
@@ -702,20 +752,28 @@
           }
           break;
 
-        case "line_deleted":
+        case "line_deleted": {
+          const removed = lines.filter(l => l.id === msg.line_id);
           lines = lines.filter(l => l.id !== msg.line_id);
+          fadeOutLines(removed);
           draw();
           break;
+        }
 
-        case "lines_deleted":
+        case "lines_deleted": {
+          const removed = lines.filter(l => l.session_id === msg.session_id);
           lines = lines.filter(l => l.session_id !== msg.session_id);
+          fadeOutLines(removed);
           draw();
           break;
+        }
 
-        case "canvas_cleared":
+        case "canvas_cleared": {
+          fadeOutLines(lines);
           lines = [];
           draw();
           break;
+        }
 
         case "rate_limited":
           showRateLimitAlert(msg.retry_after);
