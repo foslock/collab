@@ -9,9 +9,23 @@
 <body>
   <!-- Top bar -->
   <div id="topbar">
+    <div id="canvas-menu-wrap">
+      <button id="canvas-menu-btn" aria-label="Canvas menu">
+        Canvas <span class="caret">&#9662;</span>
+      </button>
+      <div id="canvas-dropdown" class="dropdown" hidden>
+        <button id="btn-new-canvas" class="dropdown-item">New Canvas</button>
+        <button id="btn-join-canvas" class="dropdown-item">Join Canvas</button>
+        <button id="btn-clear-canvas" class="dropdown-item danger" hidden>Clear Canvas</button>
+      </div>
+    </div>
+    <div class="separator"></div>
     <div id="identity">
       <span id="color-dot"></span>
       <span id="user-name">Connecting…</span>
+    </div>
+    <div id="canvas-id-display" title="Click to copy canvas URL">
+      <span id="canvas-hash-label"></span>
     </div>
     <div id="active-users"></div>
     <div id="controls">
@@ -67,6 +81,23 @@
           <dd>Anyone with the link shares the same canvas in real time. Active users are shown in the top bar — the coloured ring pulses while they're drawing or moving.</dd>
         </div>
       </dl>
+    </div>
+  </div>
+
+  <!-- Join canvas modal -->
+  <div id="join-overlay" hidden>
+    <div id="join-modal" role="dialog" aria-modal="true" aria-labelledby="join-title">
+      <div id="join-header">
+        <h2 id="join-title">Join Canvas</h2>
+        <button id="join-close" aria-label="Close">&times;</button>
+      </div>
+      <p class="join-desc">Paste a canvas ID or full URL to join.</p>
+      <input id="join-input" type="text" placeholder="e.g. a1b2c3d4 or https://…/canvas/a1b2c3d4" autocomplete="off" />
+      <div id="join-actions">
+        <button id="join-cancel" class="join-btn secondary">Cancel</button>
+        <button id="join-confirm" class="join-btn primary">Join</button>
+      </div>
+      <p id="join-error" class="join-error" hidden></p>
     </div>
   </div>
 

@@ -9,6 +9,10 @@
   let myColor = "#ffffff";
   let ws = null;
 
+  // Canvas (multi-canvas)
+  let currentCanvasHash = null;
+  let isCanvasOwner = false;
+
   // Canvas transform (pan / zoom)
   let camX = 0, camY = 0, zoom = 1;
   const MIN_ZOOM = 0.1, MAX_ZOOM = 5;
@@ -47,6 +51,9 @@
   const nameEl = document.getElementById("user-name");
   const dotEl = document.getElementById("color-dot");
   const usersEl = document.getElementById("active-users");
+  const canvasHashLabel = document.getElementById("canvas-hash-label");
+  const canvasIdDisplay = document.getElementById("canvas-id-display");
+  const clearCanvasBtn = document.getElementById("btn-clear-canvas");
 
   // ── Resize ─────────────────────────────────────────────────────────────
   function resize() {
@@ -161,6 +168,13 @@
     }
   }
 
+  function removeAllCursors() {
+    for (const sid of Object.keys(remoteCursors)) {
+      remoteCursors[sid].el.remove();
+      delete remoteCursors[sid];
+    }
+  }
+
   function repositionAllCursors() {
     for (const sid of Object.keys(remoteCursors)) {
       const c = remoteCursors[sid];
@@ -218,8 +232,6 @@
     const overflow = others.slice(MAX_VISIBLE_USERS);
 
     // Drop pills for users no longer in the visible set (gone or moved to overflow).
-    // We intentionally recreate overflow pills on demand so we only persist
-    // animation state for the pills that are actually shown in the bar.
     const visibleSids = new Set(visible.map(u => u.session_id));
     for (const sid of Object.keys(userPills)) {
       if (!visibleSids.has(sid)) {
@@ -232,9 +244,6 @@
     const existingMore = usersEl.querySelector(".user-more-btn");
     if (existingMore) existingMore.remove();
 
-    // Update or create each visible pill, then move it to the end of usersEl.
-    // appendChild on an already-attached node moves it without removing it first,
-    // so the CSS animation is NOT reset when reordering existing pills.
     for (const u of visible) {
       let pill = userPills[u.session_id];
       if (!pill) {
@@ -428,7 +437,159 @@
   document.getElementById("btn-help").onclick = () => helpOverlay.hidden = false;
   document.getElementById("help-close").onclick = () => helpOverlay.hidden = true;
   helpOverlay.addEventListener("click", (e) => { if (e.target === helpOverlay) helpOverlay.hidden = true; });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") helpOverlay.hidden = true; });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { helpOverlay.hidden = true; joinOverlay.hidden = true; } });
+
+  // ── Canvas menu ────────────────────────────────────────────────────────
+
+  const canvasMenuBtn = document.getElementById("canvas-menu-btn");
+  const canvasDropdown = document.getElementById("canvas-dropdown");
+
+  canvasMenuBtn.onclick = (e) => {
+    e.stopPropagation();
+    canvasDropdown.hidden = !canvasDropdown.hidden;
+  };
+
+  document.addEventListener("click", (e) => {
+    if (!canvasDropdown.contains(e.target) && e.target !== canvasMenuBtn) {
+      canvasDropdown.hidden = true;
+    }
+  });
+
+  document.getElementById("btn-new-canvas").onclick = async () => {
+    canvasDropdown.hidden = true;
+    const res = await fetch(`/api/canvas?session_id=${sessionId}`, { method: "POST" });
+    const data = await res.json();
+    if (data.hash_id) {
+      navigateToCanvas(data.hash_id);
+    }
+  };
+
+  // Join canvas modal
+  const joinOverlay = document.getElementById("join-overlay");
+  const joinInput = document.getElementById("join-input");
+  const joinError = document.getElementById("join-error");
+
+  document.getElementById("btn-join-canvas").onclick = () => {
+    canvasDropdown.hidden = true;
+    joinOverlay.hidden = false;
+    joinInput.value = "";
+    joinError.hidden = true;
+    joinInput.focus();
+  };
+
+  document.getElementById("join-close").onclick = () => { joinOverlay.hidden = true; };
+  document.getElementById("join-cancel").onclick = () => { joinOverlay.hidden = true; };
+  joinOverlay.addEventListener("click", (e) => { if (e.target === joinOverlay) joinOverlay.hidden = true; });
+
+  document.getElementById("join-confirm").onclick = () => attemptJoinCanvas();
+  joinInput.addEventListener("keydown", (e) => { if (e.key === "Enter") attemptJoinCanvas(); });
+
+  async function attemptJoinCanvas() {
+    const raw = joinInput.value.trim();
+    if (!raw) return;
+
+    // Extract hash from URL or use as-is
+    let hash = raw;
+    const urlMatch = raw.match(/\/canvas\/([a-f0-9]{8})/i);
+    if (urlMatch) {
+      hash = urlMatch[1];
+    }
+    // Validate it looks like a hash (8 hex chars)
+    if (!/^[a-f0-9]{8}$/i.test(hash)) {
+      joinError.textContent = "Invalid canvas ID. Expected 8-character hex code.";
+      joinError.hidden = false;
+      return;
+    }
+
+    // Check canvas exists
+    const res = await fetch(`/api/canvas/${hash}`);
+    const data = await res.json();
+    if (data.error) {
+      joinError.textContent = "Canvas not found. Check the ID and try again.";
+      joinError.hidden = false;
+      return;
+    }
+
+    joinOverlay.hidden = true;
+    navigateToCanvas(hash);
+  }
+
+  // Clear canvas (owner only)
+  clearCanvasBtn.onclick = () => {
+    if (!confirm("Clear ALL drawings on this canvas from ALL users?")) return;
+    wsSend({ type: "clear_canvas" });
+  };
+
+  // Canvas ID display — click to copy URL
+  canvasIdDisplay.onclick = () => {
+    if (!currentCanvasHash) return;
+    const url = `${location.origin}/canvas/${currentCanvasHash}`;
+    navigator.clipboard.writeText(url).then(() => {
+      const orig = canvasHashLabel.textContent;
+      canvasHashLabel.textContent = "Copied!";
+      setTimeout(() => { canvasHashLabel.textContent = orig; }, 1500);
+    });
+  };
+
+  // ── Canvas navigation ──────────────────────────────────────────────────
+
+  function navigateToCanvas(hash) {
+    // Close existing WebSocket
+    if (ws) {
+      ws.onclose = null; // prevent auto-reconnect
+      ws.close();
+      ws = null;
+    }
+
+    // Clear canvas state
+    lines = [];
+    for (const sid of Object.keys(remoteDraws)) delete remoteDraws[sid];
+    removeAllCursors();
+    for (const sid of Object.keys(userPills)) {
+      userPills[sid].remove();
+      delete userPills[sid];
+    }
+    for (const sid of Object.keys(userActivity)) delete userActivity[sid];
+    drawing = false;
+    currentPoints = [];
+
+    // Reset view
+    camX = 0; camY = 0; zoom = 1;
+
+    currentCanvasHash = hash;
+    history.pushState(null, "", `/canvas/${hash}`);
+    canvasHashLabel.textContent = hash;
+    localStorage.setItem("collab_canvas_hash", hash);
+
+    // Load lines and connect
+    loadCanvasAndConnect(hash);
+  }
+
+  async function loadCanvasAndConnect(hash) {
+    // Load canvas info
+    const canvasRes = await fetch(`/api/canvas/${hash}`);
+    const canvasData = await canvasRes.json();
+    if (canvasData.error) {
+      console.error("Canvas not found:", hash);
+      return;
+    }
+
+    // Load persisted lines
+    const linesRes = await fetch(`/api/canvas/${hash}/lines`);
+    lines = await linesRes.json();
+    draw();
+
+    // Connect WebSocket
+    connectWS();
+  }
+
+  // Handle browser back/forward
+  window.addEventListener("popstate", () => {
+    const hash = getCanvasHashFromURL();
+    if (hash && hash !== currentCanvasHash) {
+      navigateToCanvas(hash);
+    }
+  });
 
   // ── WebSocket ─────────────────────────────────────────────────────────
 
@@ -439,10 +600,11 @@
   }
 
   function connectWS() {
+    if (!currentCanvasHash || !sessionId) return;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(`${proto}//${location.host}/ws?session_id=${sessionId}`);
+    ws = new WebSocket(`${proto}//${location.host}/ws?session_id=${sessionId}&canvas_hash=${currentCanvasHash}`);
 
-    ws.onopen = () => console.log("WS connected");
+    ws.onopen = () => console.log("WS connected to canvas", currentCanvasHash);
 
     ws.onmessage = (evt) => {
       const msg = JSON.parse(evt.data);
@@ -456,6 +618,11 @@
             }
           }
           renderUsers(buildUserList());
+          break;
+
+        case "canvas_info":
+          isCanvasOwner = msg.is_owner;
+          clearCanvasBtn.hidden = !isCanvasOwner;
           break;
 
         case "user_joined":
@@ -528,6 +695,11 @@
           draw();
           break;
 
+        case "canvas_cleared":
+          lines = [];
+          draw();
+          break;
+
         case "rate_limited":
           showRateLimitAlert(msg.retry_after);
           break;
@@ -556,6 +728,13 @@
     setTimeout(function () { alert.remove(); }, 5000);
   }
 
+  // ── URL helpers ────────────────────────────────────────────────────────
+
+  function getCanvasHashFromURL() {
+    const match = location.pathname.match(/^\/canvas\/([a-f0-9]{8})$/i);
+    return match ? match[1] : null;
+  }
+
   // ── Bootstrap ─────────────────────────────────────────────────────────
 
   async function init() {
@@ -576,8 +755,49 @@
     nameEl.textContent = myName;
     dotEl.style.background = myColor;
 
-    // Load persisted lines
-    const linesRes = await fetch("/api/lines");
+    // Determine canvas: from URL, from localStorage, or create default
+    let canvasHash = getCanvasHashFromURL();
+
+    if (canvasHash) {
+      // Validate the canvas exists
+      const canvasRes = await fetch(`/api/canvas/${canvasHash}`);
+      const canvasData = await canvasRes.json();
+      if (canvasData.error) {
+        // Canvas doesn't exist, fall back to default
+        canvasHash = null;
+      }
+    }
+
+    if (!canvasHash) {
+      // Check localStorage for last used canvas
+      const storedCanvas = localStorage.getItem("collab_canvas_hash");
+      if (storedCanvas) {
+        const checkRes = await fetch(`/api/canvas/${storedCanvas}`);
+        const checkData = await checkRes.json();
+        if (!checkData.error) {
+          canvasHash = storedCanvas;
+        }
+      }
+    }
+
+    if (!canvasHash) {
+      // Create or get default canvas for this user
+      const defaultRes = await fetch(`/api/default-canvas?session_id=${sessionId}`);
+      const defaultData = await defaultRes.json();
+      canvasHash = defaultData.hash_id;
+    }
+
+    currentCanvasHash = canvasHash;
+    localStorage.setItem("collab_canvas_hash", canvasHash);
+    canvasHashLabel.textContent = canvasHash;
+
+    // Update URL if not already on a canvas URL
+    if (!getCanvasHashFromURL()) {
+      history.replaceState(null, "", `/canvas/${canvasHash}`);
+    }
+
+    // Load persisted lines for this canvas
+    const linesRes = await fetch(`/api/canvas/${canvasHash}/lines`);
     lines = await linesRes.json();
     draw();
 

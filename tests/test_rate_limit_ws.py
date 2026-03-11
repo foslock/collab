@@ -11,13 +11,26 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy.pool import NullPool
 
 import app.main
-from app.models import Session
+from app.models import Session, Canvas
 from app.database import Base
 
 
 async def _create_tables(engine):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def _create_session_and_canvas(session_factory, name, color):
+    async with session_factory() as db:
+        s = Session(name=name, color=color)
+        db.add(s)
+        await db.commit()
+        await db.refresh(s)
+        c = Canvas(owner_session_id=s.id)
+        db.add(c)
+        await db.commit()
+        await db.refresh(c)
+        return s.id, c.hash_id
 
 
 async def _create_session(session_factory, name, color):
@@ -60,11 +73,14 @@ def ws_client(tmp_path):
     app.main.manager.cursors.clear()
     app.main.manager.last_activity.clear()
     app.main.manager.line_timestamps.clear()
+    app.main.manager.canvas_map.clear()
 
-    session_id = loop.run_until_complete(_create_session(factory, "Test Fox", "#e6194b"))
+    session_id, canvas_hash = loop.run_until_complete(
+        _create_session_and_canvas(factory, "Test Fox", "#e6194b")
+    )
 
     client = TestClient(app.main.app)
-    yield client, str(session_id), factory
+    yield client, str(session_id), canvas_hash, factory
 
     app.main.async_session = original_session
     app.main.engine = original_engine
@@ -75,9 +91,10 @@ def ws_client(tmp_path):
 class TestRateLimitWebSocket:
     def test_draw_end_under_limit_succeeds(self, ws_client):
         """Drawing under the rate limit should work normally."""
-        client, session_id, _ = ws_client
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
+        client, session_id, canvas_hash, _ = ws_client
+        with client.websocket_connect(f"/ws?session_id={session_id}&canvas_hash={canvas_hash}") as ws:
             ws.receive_text()  # users_list
+            ws.receive_text()  # canvas_info
             points = [{"x": 0, "y": 0}, {"x": 10, "y": 10}]
             ws.send_text(json.dumps({"type": "draw_end", "points": points}))
             # Should not receive rate_limited — the draw_end broadcast goes
@@ -85,10 +102,11 @@ class TestRateLimitWebSocket:
 
     def test_rate_limited_response_when_exceeding_limit(self, ws_client):
         """Exceeding the rate limit should return a rate_limited message."""
-        client, session_id, _ = ws_client
+        client, session_id, canvas_hash, _ = ws_client
 
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
+        with client.websocket_connect(f"/ws?session_id={session_id}&canvas_hash={canvas_hash}") as ws:
             ws.receive_text()  # users_list
+            ws.receive_text()  # canvas_info
 
             points = [{"x": 0, "y": 0}, {"x": 10, "y": 10}]
 
@@ -106,10 +124,11 @@ class TestRateLimitWebSocket:
 
     def test_rate_limit_does_not_persist_line(self, ws_client):
         """When rate limited, the line should not be saved to DB."""
-        client, session_id, _ = ws_client
+        client, session_id, canvas_hash, _ = ws_client
 
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
+        with client.websocket_connect(f"/ws?session_id={session_id}&canvas_hash={canvas_hash}") as ws:
             ws.receive_text()  # users_list
+            ws.receive_text()  # canvas_info
 
             points = [{"x": 0, "y": 0}, {"x": 10, "y": 10}]
 
@@ -124,7 +143,7 @@ class TestRateLimitWebSocket:
             assert msg["type"] == "rate_limited"
 
         # Verify only 100 lines were persisted
-        resp = client.get("/api/lines")
+        resp = client.get(f"/api/canvas/{canvas_hash}/lines")
         data = resp.json()
         assert len(data) == 100
 
@@ -137,14 +156,16 @@ class TestActivityTrackingWebSocket:
 
     def test_cursor_move_updates_activity(self, ws_client):
         """cursor_move should mark the user as active."""
-        client, session_id, factory = ws_client
+        client, session_id, canvas_hash, factory = ws_client
         session_id_2 = _sync_create_session(factory, "Observer Owl", "#f58231")
         sid_uuid = uuid.UUID(session_id)
 
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws1:
+        with client.websocket_connect(f"/ws?session_id={session_id}&canvas_hash={canvas_hash}") as ws1:
             ws1.receive_text()  # users_list
-            with client.websocket_connect(f"/ws?session_id={session_id_2}") as ws2:
+            ws1.receive_text()  # canvas_info
+            with client.websocket_connect(f"/ws?session_id={session_id_2}&canvas_hash={canvas_hash}") as ws2:
                 ws2.receive_text()  # users_list
+                ws2.receive_text()  # canvas_info
                 ws1.receive_text()  # user_joined for ws2
 
                 app.main.manager.last_activity[sid_uuid] = 0
@@ -155,14 +176,16 @@ class TestActivityTrackingWebSocket:
 
     def test_draw_start_updates_activity(self, ws_client):
         """draw_start should mark the user as active."""
-        client, session_id, factory = ws_client
+        client, session_id, canvas_hash, factory = ws_client
         session_id_2 = _sync_create_session(factory, "Quick Lynx", "#f032e6")
         sid_uuid = uuid.UUID(session_id)
 
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws1:
+        with client.websocket_connect(f"/ws?session_id={session_id}&canvas_hash={canvas_hash}") as ws1:
             ws1.receive_text()  # users_list
-            with client.websocket_connect(f"/ws?session_id={session_id_2}") as ws2:
+            ws1.receive_text()  # canvas_info
+            with client.websocket_connect(f"/ws?session_id={session_id_2}&canvas_hash={canvas_hash}") as ws2:
                 ws2.receive_text()  # users_list
+                ws2.receive_text()  # canvas_info
                 ws1.receive_text()  # user_joined for ws2
 
                 app.main.manager.last_activity[sid_uuid] = 0
@@ -172,22 +195,17 @@ class TestActivityTrackingWebSocket:
                 assert app.main.manager.last_activity[sid_uuid] > 0
 
     def test_draw_end_updates_activity(self, ws_client):
-        """draw_end should mark the user as active.
-
-        draw_end performs a DB write which can block the TestClient's
-        ASGI thread with SQLite, so we verify indirectly: send draw_end
-        with empty points (skips DB write) and synchronize via observer.
-        The touch_activity call happens before any DB work, so this
-        accurately tests the activity update path.
-        """
-        client, session_id, factory = ws_client
+        """draw_end should mark the user as active."""
+        client, session_id, canvas_hash, factory = ws_client
         session_id_2 = _sync_create_session(factory, "Calm Tiger", "#4363d8")
         sid_uuid = uuid.UUID(session_id)
 
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws1:
+        with client.websocket_connect(f"/ws?session_id={session_id}&canvas_hash={canvas_hash}") as ws1:
             ws1.receive_text()  # users_list
-            with client.websocket_connect(f"/ws?session_id={session_id_2}") as ws2:
+            ws1.receive_text()  # canvas_info
+            with client.websocket_connect(f"/ws?session_id={session_id_2}&canvas_hash={canvas_hash}") as ws2:
                 ws2.receive_text()  # users_list
+                ws2.receive_text()  # canvas_info
                 ws1.receive_text()  # user_joined for ws2
 
                 app.main.manager.last_activity[sid_uuid] = 0
@@ -202,8 +220,8 @@ class TestActivityTrackingWebSocket:
 
     def test_users_list_includes_last_active(self, ws_client):
         """The users_list message should include last_active for each user."""
-        client, session_id, _ = ws_client
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
+        client, session_id, canvas_hash, _ = ws_client
+        with client.websocket_connect(f"/ws?session_id={session_id}&canvas_hash={canvas_hash}") as ws:
             msg = json.loads(ws.receive_text())
             assert msg["type"] == "users_list"
             for user in msg["users"]:
@@ -211,16 +229,18 @@ class TestActivityTrackingWebSocket:
 
     def test_two_users_activity_isolated(self, ws_client):
         """Activity from one user should not affect another user's timestamp."""
-        client, session_id, factory = ws_client
+        client, session_id, canvas_hash, factory = ws_client
         session_id_2 = _sync_create_session(factory, "Bold Eagle", "#3cb44b")
         sid1 = uuid.UUID(session_id)
         sid2 = uuid.UUID(session_id_2)
 
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws1:
+        with client.websocket_connect(f"/ws?session_id={session_id}&canvas_hash={canvas_hash}") as ws1:
             ws1.receive_text()  # users_list
+            ws1.receive_text()  # canvas_info
 
-            with client.websocket_connect(f"/ws?session_id={session_id_2}") as ws2:
+            with client.websocket_connect(f"/ws?session_id={session_id_2}&canvas_hash={canvas_hash}") as ws2:
                 ws2.receive_text()  # users_list
+                ws2.receive_text()  # canvas_info
                 ws1.receive_text()  # user_joined
 
                 # Make user 1 stale

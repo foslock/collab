@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from app.database import Base
-from app.models import Session, Line
+from app.models import Session, Line, Canvas
 
 # In-memory SQLite for tests
 TEST_DATABASE_URL = "sqlite+aiosqlite://"
@@ -45,6 +45,7 @@ async def client(db_engine, monkeypatch):
     app.main.manager.cursors.clear()
     app.main.manager.last_activity.clear()
     app.main.manager.line_timestamps.clear()
+    app.main.manager.canvas_map.clear()
 
     transport = ASGITransport(app=app.main.app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -62,12 +63,23 @@ async def sample_session(db_session):
 
 
 @pytest_asyncio.fixture()
-async def sample_lines(db_session, sample_session):
-    """Insert sample lines for the sample session."""
+async def sample_canvas(db_session, sample_session):
+    """Insert a sample canvas owned by sample_session."""
+    c = Canvas(owner_session_id=sample_session.id)
+    db_session.add(c)
+    await db_session.commit()
+    await db_session.refresh(c)
+    return c
+
+
+@pytest_asyncio.fixture()
+async def sample_lines(db_session, sample_session, sample_canvas):
+    """Insert sample lines for the sample session on the sample canvas."""
     lines = []
     for i in range(3):
         line = Line(
             session_id=sample_session.id,
+            canvas_id=sample_canvas.id,
             color=sample_session.color,
             points=[{"x": i * 10, "y": i * 10}, {"x": i * 10 + 5, "y": i * 10 + 5}],
         )
