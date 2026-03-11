@@ -10,12 +10,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy import select, delete
 
-from app.database import engine, async_session, Base
+from app.database import Base, create_db_engine, create_session_factory
 from app.models import Session, Line
 from app.names import generate_name
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
 SESSION_EXPIRY_DAYS = 30
+
+# Module-level engine/session — can be overridden by tests
+engine = create_db_engine()
+async_session = create_session_factory(engine)
 
 
 # ── Connection manager ──────────────────────────────────────────────────────
