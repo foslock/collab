@@ -79,7 +79,7 @@ class TestActivityTracking:
         mgr = ConnectionManager()
         sid = uuid.uuid4()
         ws = AsyncMock()
-        await mgr.connect(sid, ws, "Fox", "#abc")
+        await mgr.connect(sid, ws, "Fox", "#abc", "canvas1")
         assert sid in mgr.last_activity
 
     def test_touch_activity_updates_timestamp(self):
@@ -94,7 +94,7 @@ class TestActivityTracking:
         mgr = ConnectionManager()
         sid = uuid.uuid4()
         ws = AsyncMock()
-        await mgr.connect(sid, ws, "Fox", "#abc")
+        await mgr.connect(sid, ws, "Fox", "#abc", "canvas1")
         users = mgr.active_users()
         assert len(users) == 1
         assert "last_active" in users[0]
@@ -106,7 +106,7 @@ class TestActivityTracking:
         mgr = ConnectionManager()
         sid = uuid.uuid4()
         ws = AsyncMock()
-        await mgr.connect(sid, ws, "Fox", "#abc")
+        await mgr.connect(sid, ws, "Fox", "#abc", "canvas1")
         # Simulate old activity
         mgr.last_activity[sid] = time.monotonic() - 30
         users = mgr.active_users()

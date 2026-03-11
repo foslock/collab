@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select, delete
 
 from app.database import Base, create_db_engine, create_session_factory
-from app.models import Session, Line
+from app.models import Session, Line, Canvas
 from app.names import generate_name
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
@@ -39,18 +39,22 @@ class ConnectionManager:
         self.last_activity: dict[uuid.UUID, float] = {}
         # Rate limiting: session_id -> list of timestamps for draw_end events
         self.line_timestamps: dict[uuid.UUID, list[float]] = defaultdict(list)
+        # session_id -> canvas_hash (which canvas the user is on)
+        self.canvas_map: dict[uuid.UUID, str] = {}
 
-    async def connect(self, session_id: uuid.UUID, ws: WebSocket, name: str, color: str):
+    async def connect(self, session_id: uuid.UUID, ws: WebSocket, name: str, color: str, canvas_hash: str):
         await ws.accept()
         self.active[session_id] = ws
         self.cursors[session_id] = {"name": name, "color": color, "x": 0, "y": 0}
         self.last_activity[session_id] = time.monotonic()
+        self.canvas_map[session_id] = canvas_hash
 
     def disconnect(self, session_id: uuid.UUID):
         self.active.pop(session_id, None)
         self.cursors.pop(session_id, None)
         self.last_activity.pop(session_id, None)
         self.line_timestamps.pop(session_id, None)
+        self.canvas_map.pop(session_id, None)
 
     def touch_activity(self, session_id: uuid.UUID):
         """Mark a user as recently active."""
@@ -76,10 +80,18 @@ class ConnectionManager:
         """Record a line creation for rate limiting."""
         self.line_timestamps[session_id].append(time.monotonic())
 
-    async def broadcast(self, message: dict, exclude: uuid.UUID | None = None):
+    def _canvas_peers(self, canvas_hash: str) -> dict[uuid.UUID, WebSocket]:
+        """Return active connections on the same canvas."""
+        return {
+            sid: ws for sid, ws in self.active.items()
+            if self.canvas_map.get(sid) == canvas_hash
+        }
+
+    async def broadcast(self, message: dict, exclude: uuid.UUID | None = None, canvas_hash: str | None = None):
         data = json.dumps(message)
         dead = []
-        for sid, ws in self.active.items():
+        peers = self._canvas_peers(canvas_hash) if canvas_hash else self.active
+        for sid, ws in peers.items():
             if sid == exclude:
                 continue
             try:
@@ -89,7 +101,7 @@ class ConnectionManager:
         for sid in dead:
             self.disconnect(sid)
 
-    def active_users(self) -> list[dict]:
+    def active_users(self, canvas_hash: str | None = None) -> list[dict]:
         now = time.monotonic()
         return [
             {
@@ -98,6 +110,7 @@ class ConnectionManager:
                 **info,
             }
             for sid, info in self.cursors.items()
+            if canvas_hash is None or self.canvas_map.get(sid) == canvas_hash
         ]
 
 
@@ -131,6 +144,12 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def index():
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/canvas/{canvas_hash}")
+async def canvas_page(canvas_hash: str):
+    """Serve the same SPA for any canvas URL — the JS reads the hash from the URL."""
     return FileResponse(STATIC_DIR / "index.html")
 
 
@@ -171,9 +190,74 @@ async def get_or_create_session(session_id: str | None = Query(None)):
         }
 
 
+@app.post("/api/canvas")
+async def create_canvas(session_id: str = Query(...)):
+    """Create a new canvas owned by the given session."""
+    sid = uuid.UUID(session_id)
+    async with async_session() as db:
+        result = await db.execute(select(Session).where(Session.id == sid))
+        session = result.scalar_one_or_none()
+        if not session:
+            return {"error": "Invalid session"}, 400
+
+        canvas = Canvas(owner_session_id=sid)
+        db.add(canvas)
+        await db.commit()
+        await db.refresh(canvas)
+        return {
+            "canvas_id": str(canvas.id),
+            "hash_id": canvas.hash_id,
+            "owner_session_id": str(canvas.owner_session_id),
+        }
+
+
+@app.get("/api/canvas/{canvas_hash}")
+async def get_canvas(canvas_hash: str):
+    """Look up a canvas by its short hash."""
+    async with async_session() as db:
+        result = await db.execute(
+            select(Canvas).where(Canvas.hash_id == canvas_hash)
+        )
+        canvas = result.scalar_one_or_none()
+        if not canvas:
+            return {"error": "Canvas not found"}
+        return {
+            "canvas_id": str(canvas.id),
+            "hash_id": canvas.hash_id,
+            "owner_session_id": str(canvas.owner_session_id),
+        }
+
+
+@app.get("/api/canvas/{canvas_hash}/lines")
+async def get_canvas_lines(canvas_hash: str):
+    """Return all persisted lines for a specific canvas."""
+    async with async_session() as db:
+        # Look up canvas by hash
+        canvas_result = await db.execute(
+            select(Canvas).where(Canvas.hash_id == canvas_hash)
+        )
+        canvas = canvas_result.scalar_one_or_none()
+        if not canvas:
+            return []
+
+        result = await db.execute(
+            select(Line).where(Line.canvas_id == canvas.id)
+        )
+        lines = result.scalars().all()
+        return [
+            {
+                "id": str(line.id),
+                "session_id": str(line.session_id),
+                "color": line.color,
+                "points": line.points,
+            }
+            for line in lines
+        ]
+
+
 @app.get("/api/lines")
 async def get_lines():
-    """Return all persisted lines."""
+    """Return all persisted lines (legacy — returns all lines without canvas filter)."""
     async with async_session() as db:
         result = await db.execute(select(Line))
         lines = result.scalars().all()
@@ -188,13 +272,42 @@ async def get_lines():
         ]
 
 
+@app.get("/api/default-canvas")
+async def get_or_create_default_canvas(session_id: str = Query(...)):
+    """Get or create the default canvas for a session."""
+    sid = uuid.UUID(session_id)
+    async with async_session() as db:
+        # Check if user already owns a canvas
+        result = await db.execute(
+            select(Canvas).where(Canvas.owner_session_id == sid).order_by(Canvas.created_at).limit(1)
+        )
+        canvas = result.scalar_one_or_none()
+        if canvas:
+            return {
+                "canvas_id": str(canvas.id),
+                "hash_id": canvas.hash_id,
+                "owner_session_id": str(canvas.owner_session_id),
+            }
+
+        # Create default canvas for this user
+        canvas = Canvas(owner_session_id=sid)
+        db.add(canvas)
+        await db.commit()
+        await db.refresh(canvas)
+        return {
+            "canvas_id": str(canvas.id),
+            "hash_id": canvas.hash_id,
+            "owner_session_id": str(canvas.owner_session_id),
+        }
+
+
 # ── WebSocket ────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
+async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...), canvas_hash: str = Query(...)):
     sid = uuid.UUID(session_id)
 
-    # Look up session
+    # Look up session and canvas
     async with async_session() as db:
         result = await db.execute(select(Session).where(Session.id == sid))
         session = result.scalar_one_or_none()
@@ -206,17 +319,36 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
         session.last_seen = datetime.now(timezone.utc)
         await db.commit()
 
-    await manager.connect(sid, ws, name, color)
+        # Validate canvas exists
+        canvas_result = await db.execute(
+            select(Canvas).where(Canvas.hash_id == canvas_hash)
+        )
+        canvas = canvas_result.scalar_one_or_none()
+        if not canvas:
+            await ws.close(code=4002, reason="Invalid canvas")
+            return
+        canvas_id = canvas.id
+        is_owner = canvas.owner_session_id == sid
 
-    # Notify others that a user joined
+    await manager.connect(sid, ws, name, color, canvas_hash)
+
+    # Notify others on the same canvas that a user joined
     await manager.broadcast(
         {"type": "user_joined", "session_id": str(sid), "name": name, "color": color},
         exclude=sid,
+        canvas_hash=canvas_hash,
     )
-    # Send the joiner the current user list
+    # Send the joiner the current user list for this canvas
     await ws.send_text(json.dumps({
         "type": "users_list",
-        "users": manager.active_users(),
+        "users": manager.active_users(canvas_hash=canvas_hash),
+    }))
+    # Send canvas info to the joiner
+    await ws.send_text(json.dumps({
+        "type": "canvas_info",
+        "canvas_hash": canvas_hash,
+        "is_owner": is_owner,
+        "owner_session_id": str(canvas.owner_session_id),
     }))
 
     try:
@@ -233,6 +365,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                      "name": name, "color": color,
                      "x": data["x"], "y": data["y"]},
                     exclude=sid,
+                    canvas_hash=canvas_hash,
                 )
 
             elif msg_type == "draw_start":
@@ -241,6 +374,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                     {"type": "draw_start", "session_id": str(sid),
                      "color": color, "x": data["x"], "y": data["y"]},
                     exclude=sid,
+                    canvas_hash=canvas_hash,
                 )
 
             elif msg_type == "draw_move":
@@ -249,6 +383,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                     {"type": "draw_move", "session_id": str(sid),
                      "color": color, "x": data["x"], "y": data["y"]},
                     exclude=sid,
+                    canvas_hash=canvas_hash,
                 )
 
             elif msg_type == "draw_end":
@@ -269,7 +404,8 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                     manager.record_line(sid)
                     async with async_session() as db:
                         line = Line(
-                            session_id=sid, color=color, points=points
+                            session_id=sid, canvas_id=canvas_id,
+                            color=color, points=points
                         )
                         db.add(line)
                         await db.commit()
@@ -288,13 +424,14 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                      "color": color, "line_id": line_id,
                      "points": points},
                     exclude=sid,
+                    canvas_hash=canvas_hash,
                 )
 
             elif msg_type == "undo_last_line":
                 async with async_session() as db:
                     result = await db.execute(
                         select(Line)
-                        .where(Line.session_id == sid)
+                        .where(Line.session_id == sid, Line.canvas_id == canvas_id)
                         .order_by(Line.created_at.desc())
                         .limit(1)
                     )
@@ -306,22 +443,43 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                         await manager.broadcast(
                             {"type": "line_deleted", "line_id": line_id,
                              "session_id": str(sid)},
+                            canvas_hash=canvas_hash,
                         )
 
             elif msg_type == "delete_my_lines":
                 async with async_session() as db:
                     await db.execute(
-                        delete(Line).where(Line.session_id == sid)
+                        delete(Line).where(Line.session_id == sid, Line.canvas_id == canvas_id)
                     )
                     await db.commit()
                 await manager.broadcast(
                     {"type": "lines_deleted", "session_id": str(sid)},
+                    canvas_hash=canvas_hash,
+                )
+
+            elif msg_type == "clear_canvas":
+                # Only the canvas owner can clear all lines
+                if not is_owner:
+                    await ws.send_text(json.dumps({
+                        "type": "error",
+                        "message": "Only the canvas owner can clear the canvas",
+                    }))
+                    continue
+                async with async_session() as db:
+                    await db.execute(
+                        delete(Line).where(Line.canvas_id == canvas_id)
+                    )
+                    await db.commit()
+                await manager.broadcast(
+                    {"type": "canvas_cleared", "session_id": str(sid)},
+                    canvas_hash=canvas_hash,
                 )
 
     except WebSocketDisconnect:
         manager.disconnect(sid)
         await manager.broadcast(
             {"type": "user_left", "session_id": str(sid), "name": name},
+            canvas_hash=canvas_hash,
         )
 
 
