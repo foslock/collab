@@ -36,6 +36,10 @@ Collab Canvas is a real-time collaborative drawing app. FastAPI backend with Web
 - WebSocket tests that need to verify server-side state changes after `send_text` should either: (a) receive a broadcast on a second WebSocket to synchronize, or (b) send a follow-up message to force processing. Direct assertion after `send_text` can be racy.
 - When adding new state to `ConnectionManager`, update the clear calls in `tests/conftest.py` (`client` fixture) and `tests/test_websocket.py` (`sync_client` fixture) and `tests/test_rate_limit_ws.py` (`ws_client` fixture).
 
+## Important: Paired Constants
+
+`ACTIVITY_TIMEOUT` is defined in both `app/main.py` and `static/app.js` and must stay in sync. The server uses it for `last_active` in user lists; the client uses it to decide pulse vs faded styling.
+
 ## Common Patterns
 
 - **Adding a new WebSocket message type**: Handle in the `while True` loop in `websocket_endpoint` in `app/main.py`, add corresponding `case` in the `switch` block in `static/app.js`.
