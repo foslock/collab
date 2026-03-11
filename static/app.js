@@ -27,6 +27,9 @@
   // Remote cursors: session_id -> { name, color, x, y, el }
   const remoteCursors = {};
 
+  // Persistent pill elements: session_id -> pill DOM element (preserves animation state)
+  const userPills = {};
+
   // Activity tracking: session_id -> last activity timestamp (Date.now())
   const userActivity = {};
 
@@ -174,9 +177,21 @@
     return (Date.now() - last) < ACTIVITY_TIMEOUT * 1000;
   }
 
+  function hexToRgba(hex, alpha) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+
   function markActive(sid) {
+    const wasActive = isActive(sid);
     userActivity[sid] = Date.now();
-    renderUsers(buildUserList());
+    // Only re-render when transitioning inactive -> active; avoids resetting the
+    // CSS animation on every cursor-move message while the user is already active.
+    if (!wasActive) {
+      renderUsers(buildUserList());
+    }
   }
 
   function buildUserList() {
@@ -186,8 +201,6 @@
   }
 
   function renderUsers(userList) {
-    usersEl.innerHTML = "";
-
     const others = userList.filter(u => u.session_id !== sessionId);
 
     // Sort: active users first (most recently active first), then inactive
@@ -204,8 +217,33 @@
     const visible = others.slice(0, MAX_VISIBLE_USERS);
     const overflow = others.slice(MAX_VISIBLE_USERS);
 
+    // Drop pills for users no longer in the visible set (gone or moved to overflow).
+    // We intentionally recreate overflow pills on demand so we only persist
+    // animation state for the pills that are actually shown in the bar.
+    const visibleSids = new Set(visible.map(u => u.session_id));
+    for (const sid of Object.keys(userPills)) {
+      if (!visibleSids.has(sid)) {
+        userPills[sid].remove();
+        delete userPills[sid];
+      }
+    }
+
+    // Remove the overflow "more" button so we can re-append it at the end
+    const existingMore = usersEl.querySelector(".user-more-btn");
+    if (existingMore) existingMore.remove();
+
+    // Update or create each visible pill, then move it to the end of usersEl.
+    // appendChild on an already-attached node moves it without removing it first,
+    // so the CSS animation is NOT reset when reordering existing pills.
     for (const u of visible) {
-      usersEl.appendChild(createPill(u));
+      let pill = userPills[u.session_id];
+      if (!pill) {
+        pill = createPill(u);
+        userPills[u.session_id] = pill;
+      } else {
+        updatePillState(pill, u);
+      }
+      usersEl.appendChild(pill);
     }
 
     if (overflow.length > 0) {
@@ -223,9 +261,16 @@
   function createPill(u) {
     const active = isActive(u.session_id);
     const pill = document.createElement("div");
-    pill.className = "user-pill" + (active ? " active" : " faded");
-    pill.innerHTML = '<span class="dot' + (active ? " pulse" : "") + '" style="background:' + u.color + '"></span>' + u.name;
+    pill.className = "user-pill" + (active ? " pulse" : " faded");
+    pill.style.setProperty("--pulse-color", hexToRgba(u.color, 0.45));
+    pill.innerHTML = '<span class="dot" style="background:' + u.color + '"></span>' + u.name;
     return pill;
+  }
+
+  function updatePillState(pill, u) {
+    const active = isActive(u.session_id);
+    pill.classList.toggle("pulse", active);
+    pill.classList.toggle("faded", !active);
   }
 
   function toggleOverflowDropdown(users, anchorEl) {
@@ -374,6 +419,12 @@
     if (!confirm("Delete all your drawings?")) return;
     wsSend({ type: "delete_my_lines" });
   };
+
+  const helpOverlay = document.getElementById("help-overlay");
+  document.getElementById("btn-help").onclick = () => helpOverlay.hidden = false;
+  document.getElementById("help-close").onclick = () => helpOverlay.hidden = true;
+  helpOverlay.addEventListener("click", (e) => { if (e.target === helpOverlay) helpOverlay.hidden = true; });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") helpOverlay.hidden = true; });
 
   // ── WebSocket ─────────────────────────────────────────────────────────
 
