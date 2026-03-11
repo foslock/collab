@@ -52,6 +52,8 @@ async def client(db_engine, monkeypatch):
     # Reset the connection manager state between tests
     app.main.manager.active.clear()
     app.main.manager.cursors.clear()
+    app.main.manager.last_activity.clear()
+    app.main.manager.line_timestamps.clear()
 
     transport = ASGITransport(app=app.main.app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

@@ -39,6 +39,8 @@ def sync_client(tmp_path):
 
     app.main.manager.active.clear()
     app.main.manager.cursors.clear()
+    app.main.manager.last_activity.clear()
+    app.main.manager.line_timestamps.clear()
 
     # Create a test session in the DB
     session_id = loop.run_until_complete(_create_test_session(test_session_factory))

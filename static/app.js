@@ -26,6 +26,12 @@
   // Remote cursors: session_id -> { name, color, x, y, el }
   const remoteCursors = {};
 
+  // Activity tracking: session_id -> last activity timestamp (Date.now())
+  const userActivity = {};
+
+  // Max visible user pills before showing "more" dropdown
+  const MAX_VISIBLE_USERS = 5;
+
   // Panning
   let panning = false;
   let panStartX = 0, panStartY = 0;
@@ -161,16 +167,89 @@
   }
 
   // ── User list UI ──────────────────────────────────────────────────────
+  function isActive(sid) {
+    const last = userActivity[sid];
+    if (!last) return false;
+    return (Date.now() - last) < ACTIVITY_TIMEOUT * 1000;
+  }
+
+  function markActive(sid) {
+    userActivity[sid] = Date.now();
+    renderUsers(buildUserList());
+  }
+
+  function buildUserList() {
+    return Object.entries(remoteCursors).map(([sid, c]) => ({
+      session_id: sid, name: c.name, color: c.color,
+    }));
+  }
+
   function renderUsers(userList) {
     usersEl.innerHTML = "";
-    for (const u of userList) {
-      if (u.session_id === sessionId) continue;
-      const pill = document.createElement("div");
-      pill.className = "user-pill";
-      pill.innerHTML = `<span class="dot" style="background:${u.color}"></span>${u.name}`;
-      usersEl.appendChild(pill);
+
+    const others = userList.filter(u => u.session_id !== sessionId);
+
+    // Sort: active users first (most recently active first), then inactive
+    others.sort((a, b) => {
+      const aActive = isActive(a.session_id);
+      const bActive = isActive(b.session_id);
+      if (aActive && !bActive) return -1;
+      if (!aActive && bActive) return 1;
+      const aTime = userActivity[a.session_id] || 0;
+      const bTime = userActivity[b.session_id] || 0;
+      return bTime - aTime;
+    });
+
+    const visible = others.slice(0, MAX_VISIBLE_USERS);
+    const overflow = others.slice(MAX_VISIBLE_USERS);
+
+    for (const u of visible) {
+      usersEl.appendChild(createPill(u));
+    }
+
+    if (overflow.length > 0) {
+      const moreBtn = document.createElement("div");
+      moreBtn.className = "user-pill user-more-btn";
+      moreBtn.textContent = "+" + overflow.length + " more";
+      moreBtn.onclick = function (e) {
+        e.stopPropagation();
+        toggleOverflowDropdown(overflow, moreBtn);
+      };
+      usersEl.appendChild(moreBtn);
     }
   }
+
+  function createPill(u) {
+    const active = isActive(u.session_id);
+    const pill = document.createElement("div");
+    pill.className = "user-pill" + (active ? " active" : " faded");
+    pill.innerHTML = '<span class="dot' + (active ? " pulse" : "") + '" style="background:' + u.color + '"></span>' + u.name;
+    return pill;
+  }
+
+  function toggleOverflowDropdown(users, anchorEl) {
+    var existing = document.getElementById("user-overflow-dropdown");
+    if (existing) { existing.remove(); return; }
+
+    var dropdown = document.createElement("div");
+    dropdown.id = "user-overflow-dropdown";
+    for (var i = 0; i < users.length; i++) {
+      dropdown.appendChild(createPill(users[i]));
+    }
+    anchorEl.style.position = "relative";
+    anchorEl.appendChild(dropdown);
+
+    var close = function (e) {
+      if (!dropdown.contains(e.target) && e.target !== anchorEl) {
+        dropdown.remove();
+        document.removeEventListener("click", close);
+      }
+    };
+    setTimeout(function () { document.addEventListener("click", close); }, 0);
+  }
+
+  // Periodically re-render to update active/faded states
+  setInterval(function () { renderUsers(buildUserList()); }, 3000);
 
   // ── Input handling ────────────────────────────────────────────────────
 
@@ -314,39 +393,32 @@
 
       switch (msg.type) {
         case "users_list":
-          renderUsers(msg.users);
           for (const u of msg.users) {
             if (u.session_id !== sessionId) {
               ensureCursorEl(u.session_id, u.name, u.color);
               updateCursorPos(u.session_id, u.x, u.y);
             }
           }
+          renderUsers(buildUserList());
           break;
 
         case "user_joined":
           ensureCursorEl(msg.session_id, msg.name, msg.color);
-          // refresh pill list
-          renderUsers(
-            Object.entries(remoteCursors).map(([sid, c]) => ({
-              session_id: sid, name: c.name, color: c.color,
-            }))
-          );
+          markActive(msg.session_id);
           break;
 
         case "user_left":
           removeCursor(msg.session_id);
           delete remoteDraws[msg.session_id];
-          renderUsers(
-            Object.entries(remoteCursors).map(([sid, c]) => ({
-              session_id: sid, name: c.name, color: c.color,
-            }))
-          );
+          delete userActivity[msg.session_id];
+          renderUsers(buildUserList());
           draw();
           break;
 
         case "cursor_move":
           ensureCursorEl(msg.session_id, msg.name, msg.color);
           updateCursorPos(msg.session_id, msg.x, msg.y);
+          markActive(msg.session_id);
           break;
 
         case "draw_start":
@@ -354,6 +426,7 @@
             color: msg.color,
             points: [{ x: msg.x, y: msg.y }],
           };
+          markActive(msg.session_id);
           draw();
           break;
 
@@ -362,6 +435,7 @@
             remoteDraws[msg.session_id].points.push({ x: msg.x, y: msg.y });
             draw();
           }
+          markActive(msg.session_id);
           break;
 
         case "draw_end":
@@ -374,12 +448,17 @@
               points: msg.points,
             });
           }
+          markActive(msg.session_id);
           draw();
           break;
 
         case "lines_deleted":
           lines = lines.filter(l => l.session_id !== msg.session_id);
           draw();
+          break;
+
+        case "rate_limited":
+          showRateLimitAlert(msg.retry_after);
           break;
       }
     };
@@ -393,6 +472,17 @@
       console.error("WS error", err);
       ws.close();
     };
+  }
+
+  // ── Rate limit alert ──────────────────────────────────────────────────
+  function showRateLimitAlert(retryAfter) {
+    // Don't stack alerts
+    if (document.getElementById("rate-limit-alert")) return;
+    const alert = document.createElement("div");
+    alert.id = "rate-limit-alert";
+    alert.textContent = "You\u2019re drawing too fast! Please wait " + retryAfter + "s before drawing again.";
+    document.body.appendChild(alert);
+    setTimeout(function () { alert.remove(); }, 5000);
   }
 
   // ── Bootstrap ─────────────────────────────────────────────────────────
