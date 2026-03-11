@@ -69,13 +69,13 @@ html, body {
   display: inline-block;
 }
 
-.user-pill.pulse {
+.user-pill.pulse .dot {
   animation: pulse-glow 2s ease-in-out infinite;
 }
 
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 0 0 var(--pulse-color, rgba(255,255,255,0.2)); }
-  50%      { box-shadow: 0 0 0 3px var(--pulse-color, rgba(255,255,255,0.2)); }
+  50%      { box-shadow: 0 0 0 4px var(--pulse-color, rgba(255,255,255,0.2)); }
 }
 
 /* ── Overflow dropdown ──────────────────────────────────────────── */
