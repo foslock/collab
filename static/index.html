@@ -14,6 +14,10 @@
         Canvas <span class="caret">&#9662;</span>
       </button>
       <div id="canvas-dropdown" class="dropdown" hidden>
+        <div id="canvas-hash-item" class="dropdown-item canvas-hash" title="Click to copy canvas URL">
+          <span id="canvas-hash-label"></span>
+        </div>
+        <div class="dropdown-divider"></div>
         <button id="btn-new-canvas" class="dropdown-item">New Canvas</button>
         <button id="btn-join-canvas" class="dropdown-item">Join Canvas</button>
         <button id="btn-clear-canvas" class="dropdown-item danger" hidden>Clear Canvas</button>
@@ -23,9 +27,6 @@
     <div id="identity">
       <span id="color-dot"></span>
       <span id="user-name">Connecting…</span>
-    </div>
-    <div id="canvas-id-display" title="Click to copy canvas URL">
-      <span id="canvas-hash-label"></span>
     </div>
     <div id="active-users"></div>
     <div id="controls">

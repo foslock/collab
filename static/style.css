@@ -103,24 +103,31 @@ html, body {
   flex-shrink: 0;
 }
 
-#canvas-id-display {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: rgba(255,255,255,0.05);
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 12px;
+.dropdown-item.canvas-hash {
   font-family: monospace;
+  font-size: 12px;
   color: rgba(255,255,255,0.5);
   cursor: pointer;
-  transition: background 0.15s;
-  white-space: nowrap;
+  user-select: none;
 }
 
-#canvas-id-display:hover {
-  background: rgba(255,255,255,0.1);
+.dropdown-item.canvas-hash:hover {
   color: rgba(255,255,255,0.8);
+}
+
+.dropdown-divider {
+  height: 1px;
+  background: rgba(255,255,255,0.08);
+  margin: 4px 0;
+}
+
+/* ── Owner badge ────────────────────────────────────────────── */
+
+.owner-badge {
+  font-size: 10px;
+  margin-left: 2px;
+  opacity: 0.8;
+  title: "Canvas owner";
 }
 
 /* ── Join canvas modal ────────────────────────────────────────── */

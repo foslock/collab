@@ -12,6 +12,7 @@
   // Canvas (multi-canvas)
   let currentCanvasHash = null;
   let isCanvasOwner = false;
+  let ownerSessionId = null;
 
   // Canvas transform (pan / zoom)
   let camX = 0, camY = 0, zoom = 1;
@@ -52,7 +53,7 @@
   const dotEl = document.getElementById("color-dot");
   const usersEl = document.getElementById("active-users");
   const canvasHashLabel = document.getElementById("canvas-hash-label");
-  const canvasIdDisplay = document.getElementById("canvas-id-display");
+  const canvasHashItem = document.getElementById("canvas-hash-item");
   const clearCanvasBtn = document.getElementById("btn-clear-canvas");
 
   // ── Resize ─────────────────────────────────────────────────────────────
@@ -272,7 +273,10 @@
     const pill = document.createElement("div");
     pill.className = "user-pill" + (active ? " pulse" : " faded");
     pill.style.setProperty("--pulse-color", hexToRgba(u.color, 0.45));
-    pill.innerHTML = '<span class="dot" style="background:' + u.color + '"></span>' + u.name;
+    const ownerIcon = u.session_id === ownerSessionId
+      ? '<span class="owner-badge" title="Canvas owner">&#9733;</span>'
+      : '';
+    pill.innerHTML = '<span class="dot" style="background:' + u.color + '"></span>' + u.name + ownerIcon;
     return pill;
   }
 
@@ -301,6 +305,13 @@
       }
     };
     setTimeout(function () { document.addEventListener("click", close); }, 0);
+  }
+
+  function rebuildAllPills() {
+    for (const sid of Object.keys(userPills)) {
+      userPills[sid].remove();
+      delete userPills[sid];
+    }
   }
 
   // Periodically re-render to update active/faded states
@@ -520,8 +531,9 @@
     wsSend({ type: "clear_canvas" });
   };
 
-  // Canvas ID display — click to copy URL
-  canvasIdDisplay.onclick = () => {
+  // Canvas hash in dropdown — click to copy URL
+  canvasHashItem.onclick = (e) => {
+    e.stopPropagation();
     if (!currentCanvasHash) return;
     const url = `${location.origin}/canvas/${currentCanvasHash}`;
     navigator.clipboard.writeText(url).then(() => {
@@ -555,6 +567,7 @@
 
     // Reset view
     camX = 0; camY = 0; zoom = 1;
+    ownerSessionId = null;
 
     currentCanvasHash = hash;
     history.pushState(null, "", `/canvas/${hash}`);
@@ -622,7 +635,11 @@
 
         case "canvas_info":
           isCanvasOwner = msg.is_owner;
+          ownerSessionId = msg.owner_session_id;
           clearCanvasBtn.hidden = !isCanvasOwner;
+          // Re-render user pills so owner badge appears
+          rebuildAllPills();
+          renderUsers(buildUserList());
           break;
 
         case "user_joined":
