@@ -128,52 +128,75 @@ class TestRateLimitWebSocket:
 
 
 class TestActivityTrackingWebSocket:
+    """Activity tracking tests use two WebSocket connections: an 'actor' (ws1)
+    whose activity we're testing, and an 'observer' (ws2) that receives the
+    broadcast. Calling ws2.receive_text() blocks until the server has fully
+    processed the actor's message, eliminating race conditions."""
+
     def test_cursor_move_updates_activity(self, ws_client):
         """cursor_move should mark the user as active."""
-        client, session_id, _ = ws_client
+        client, session_id, factory = ws_client
+        session_id_2 = _sync_create_session(factory, "Observer Owl", "#f58231")
         sid_uuid = uuid.UUID(session_id)
 
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
-            ws.receive_text()  # users_list
+        with client.websocket_connect(f"/ws?session_id={session_id}") as ws1:
+            ws1.receive_text()  # users_list
+            with client.websocket_connect(f"/ws?session_id={session_id_2}") as ws2:
+                ws2.receive_text()  # users_list
+                ws1.receive_text()  # user_joined for ws2
 
-            # Set activity to old so we can detect the update
-            app.main.manager.last_activity[sid_uuid] = 0
-
-            ws.send_text(json.dumps({"type": "cursor_move", "x": 50, "y": 50}))
-            # Send a follow-up message to force processing of the previous one
-            ws.send_text(json.dumps({"type": "cursor_move", "x": 51, "y": 51}))
-            assert app.main.manager.last_activity[sid_uuid] > 0
+                app.main.manager.last_activity[sid_uuid] = 0
+                ws1.send_text(json.dumps({"type": "cursor_move", "x": 50, "y": 50}))
+                msg = json.loads(ws2.receive_text())
+                assert msg["type"] == "cursor_move"
+                assert app.main.manager.last_activity[sid_uuid] > 0
 
     def test_draw_start_updates_activity(self, ws_client):
         """draw_start should mark the user as active."""
-        client, session_id, _ = ws_client
+        client, session_id, factory = ws_client
+        session_id_2 = _sync_create_session(factory, "Quick Lynx", "#f032e6")
         sid_uuid = uuid.UUID(session_id)
 
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
-            ws.receive_text()  # users_list
-            app.main.manager.last_activity[sid_uuid] = 0
+        with client.websocket_connect(f"/ws?session_id={session_id}") as ws1:
+            ws1.receive_text()  # users_list
+            with client.websocket_connect(f"/ws?session_id={session_id_2}") as ws2:
+                ws2.receive_text()  # users_list
+                ws1.receive_text()  # user_joined for ws2
 
-            ws.send_text(json.dumps({"type": "draw_start", "x": 0, "y": 0}))
-            # Send a follow-up message and verify state after it processes
-            ws.send_text(json.dumps({"type": "cursor_move", "x": 1, "y": 1}))
-            assert app.main.manager.last_activity[sid_uuid] > 0
+                app.main.manager.last_activity[sid_uuid] = 0
+                ws1.send_text(json.dumps({"type": "draw_start", "x": 0, "y": 0}))
+                msg = json.loads(ws2.receive_text())
+                assert msg["type"] == "draw_start"
+                assert app.main.manager.last_activity[sid_uuid] > 0
 
     def test_draw_end_updates_activity(self, ws_client):
-        """draw_end should mark the user as active."""
-        client, session_id, _ = ws_client
+        """draw_end should mark the user as active.
+
+        draw_end performs a DB write which can block the TestClient's
+        ASGI thread with SQLite, so we verify indirectly: send draw_end
+        with empty points (skips DB write) and synchronize via observer.
+        The touch_activity call happens before any DB work, so this
+        accurately tests the activity update path.
+        """
+        client, session_id, factory = ws_client
+        session_id_2 = _sync_create_session(factory, "Calm Tiger", "#4363d8")
         sid_uuid = uuid.UUID(session_id)
 
-        with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
-            ws.receive_text()  # users_list
-            app.main.manager.last_activity[sid_uuid] = 0
+        with client.websocket_connect(f"/ws?session_id={session_id}") as ws1:
+            ws1.receive_text()  # users_list
+            with client.websocket_connect(f"/ws?session_id={session_id_2}") as ws2:
+                ws2.receive_text()  # users_list
+                ws1.receive_text()  # user_joined for ws2
 
-            ws.send_text(json.dumps({
-                "type": "draw_end",
-                "points": [{"x": 0, "y": 0}, {"x": 10, "y": 10}],
-            }))
-            # Send a follow-up message and verify state after it processes
-            ws.send_text(json.dumps({"type": "cursor_move", "x": 1, "y": 1}))
-            assert app.main.manager.last_activity[sid_uuid] > 0
+                app.main.manager.last_activity[sid_uuid] = 0
+                # Empty points skips the DB write but still calls touch_activity
+                ws1.send_text(json.dumps({
+                    "type": "draw_end",
+                    "points": [],
+                }))
+                msg = json.loads(ws2.receive_text())
+                assert msg["type"] == "draw_end"
+                assert app.main.manager.last_activity[sid_uuid] > 0
 
     def test_users_list_includes_last_active(self, ws_client):
         """The users_list message should include last_active for each user."""
