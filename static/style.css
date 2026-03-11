@@ -96,6 +96,8 @@ html, body {
   background: rgba(255, 107, 107, 0.15);
 }
 
+.dropdown-item[hidden] { display: none; }
+
 .separator {
   width: 1px;
   height: 24px;
