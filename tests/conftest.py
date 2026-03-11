@@ -1,8 +1,6 @@
-import asyncio
 import uuid
 from unittest.mock import AsyncMock
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -12,13 +10,6 @@ from app.models import Session, Line
 
 # In-memory SQLite for tests
 TEST_DATABASE_URL = "sqlite+aiosqlite://"
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest_asyncio.fixture()

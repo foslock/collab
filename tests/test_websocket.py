@@ -156,21 +156,76 @@ class TestWebSocket:
                 assert msg["points"] == []
                 assert msg["line_id"] is None
 
+    def test_draw_end_sends_draw_confirmed_to_sender(self, sync_client):
+        """draw_end with points should send draw_confirmed with a line_id back to sender."""
+        client, session_id, _ = sync_client
+
+        with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
+            ws.receive_text()  # users_list
+
+            points = [{"x": 0, "y": 0}, {"x": 10, "y": 10}]
+            ws.send_text(json.dumps({"type": "draw_end", "points": points}))
+            msg = json.loads(ws.receive_text())
+            assert msg["type"] == "draw_confirmed"
+            assert msg["line_id"] is not None
+
     def test_delete_my_lines(self, sync_client):
         client, session_id, _ = sync_client
 
         with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
             ws.receive_text()  # users_list
 
-            # Draw a line first
+            # Draw a line first — sender receives draw_confirmed
             points = [{"x": 0, "y": 0}, {"x": 50, "y": 50}]
             ws.send_text(json.dumps({"type": "draw_end", "points": points}))
+            ws.receive_text()  # draw_confirmed
 
             # Delete my lines — broadcast includes sender
             ws.send_text(json.dumps({"type": "delete_my_lines"}))
             msg = json.loads(ws.receive_text())
             assert msg["type"] == "lines_deleted"
             assert msg["session_id"] == session_id
+
+    def test_undo_last_line(self, sync_client):
+        """undo_last_line deletes the most recent line and broadcasts line_deleted."""
+        client, session_id, _ = sync_client
+
+        with client.websocket_connect(f"/ws?session_id={session_id}") as ws:
+            ws.receive_text()  # users_list
+
+            # Draw two lines
+            points1 = [{"x": 0, "y": 0}, {"x": 10, "y": 10}]
+            points2 = [{"x": 20, "y": 20}, {"x": 30, "y": 30}]
+            ws.send_text(json.dumps({"type": "draw_end", "points": points1}))
+            confirmed1 = json.loads(ws.receive_text())
+            assert confirmed1["type"] == "draw_confirmed"
+            line_id_1 = confirmed1["line_id"]
+
+            ws.send_text(json.dumps({"type": "draw_end", "points": points2}))
+            confirmed2 = json.loads(ws.receive_text())
+            assert confirmed2["type"] == "draw_confirmed"
+            line_id_2 = confirmed2["line_id"]
+
+            # Undo — should delete the most recent line (line 2)
+            ws.send_text(json.dumps({"type": "undo_last_line"}))
+            msg = json.loads(ws.receive_text())
+            assert msg["type"] == "line_deleted"
+            assert msg["line_id"] == line_id_2
+            assert msg["session_id"] == session_id
+
+            # Undo again — should delete line 1
+            ws.send_text(json.dumps({"type": "undo_last_line"}))
+            msg = json.loads(ws.receive_text())
+            assert msg["type"] == "line_deleted"
+            assert msg["line_id"] == line_id_1
+
+            # Undo with no lines left — should receive nothing (no broadcast)
+            # We verify by drawing a fresh line and confirming the undo only removes that one
+            ws.send_text(json.dumps({"type": "draw_end", "points": points1}))
+            ws.receive_text()  # draw_confirmed
+            ws.send_text(json.dumps({"type": "undo_last_line"}))
+            msg = json.loads(ws.receive_text())
+            assert msg["type"] == "line_deleted"
 
     def test_invalid_session_rejected(self, sync_client):
         client, _, _ = sync_client

@@ -92,9 +92,10 @@ class TestRateLimitWebSocket:
 
             points = [{"x": 0, "y": 0}, {"x": 10, "y": 10}]
 
-            # Fill up the rate limit bucket
+            # Fill up the rate limit bucket, draining draw_confirmed each time
             for _ in range(100):
                 ws.send_text(json.dumps({"type": "draw_end", "points": points}))
+                ws.receive_text()  # draw_confirmed
 
             # The 101st should be rate limited
             ws.send_text(json.dumps({"type": "draw_end", "points": points}))
@@ -112,9 +113,10 @@ class TestRateLimitWebSocket:
 
             points = [{"x": 0, "y": 0}, {"x": 10, "y": 10}]
 
-            # Fill up the rate limit
+            # Fill up the rate limit, draining draw_confirmed each time
             for _ in range(100):
                 ws.send_text(json.dumps({"type": "draw_end", "points": points}))
+                ws.receive_text()  # draw_confirmed
 
             # This one should be rejected
             ws.send_text(json.dumps({"type": "draw_end", "points": points}))

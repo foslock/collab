@@ -25,9 +25,17 @@ A real-time collaborative drawing application where multiple users draw on a sha
 
 ### Local Development
 
+Dependencies are managed with [uv](https://docs.astral.sh/uv/). Install it once with:
+
 ```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then install the project and run the dev server:
+
+```bash
+uv sync          # creates .venv and installs all deps (including dev)
+uv run uvicorn app.main:app --reload
 ```
 
 Open http://localhost:8000 in multiple browser tabs to test collaboration.
@@ -43,8 +51,7 @@ This starts PostgreSQL and the web server on port 8000.
 ### Running Tests
 
 ```bash
-pip install -r requirements.txt
-python -m pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 Tests use an in-memory SQLite database and require no external services.

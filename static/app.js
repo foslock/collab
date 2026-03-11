@@ -415,6 +415,10 @@
     draw();
   };
 
+  document.getElementById("btn-undo").onclick = () => {
+    wsSend({ type: "undo_last_line" });
+  };
+
   document.getElementById("btn-delete").onclick = () => {
     if (!confirm("Delete all your drawings?")) return;
     wsSend({ type: "delete_my_lines" });
@@ -501,6 +505,21 @@
             });
           }
           markActive(msg.session_id);
+          draw();
+          break;
+
+        case "draw_confirmed":
+          // Assign the server-issued ID to our most recent unconfirmed local line
+          for (let i = lines.length - 1; i >= 0; i--) {
+            if (lines[i].session_id === sessionId && lines[i].id === null) {
+              lines[i].id = msg.line_id;
+              break;
+            }
+          }
+          break;
+
+        case "line_deleted":
+          lines = lines.filter(l => l.id !== msg.line_id);
           draw();
           break;
 

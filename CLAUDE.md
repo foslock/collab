@@ -6,9 +6,10 @@ Collab Canvas is a real-time collaborative drawing app. FastAPI backend with Web
 
 ## Commands
 
-- **Run server**: `uvicorn app.main:app --reload`
-- **Run tests**: `python -m pytest tests/ -v`
-- **Run single test file**: `python -m pytest tests/test_rate_limiting.py -v`
+- **Install deps**: `uv sync` (includes dev deps; use `uv sync --no-dev` for production-only)
+- **Run server**: `uv run uvicorn app.main:app --reload`
+- **Run tests**: `uv run pytest tests/ -v`
+- **Run single test file**: `uv run pytest tests/test_rate_limiting.py -v`
 - **Docker**: `docker-compose up --build`
 
 ## Project Structure
