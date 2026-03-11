@@ -231,6 +231,13 @@
     drawing = false;
 
     if (currentPoints.length >= 2) {
+      // Add to local lines immediately so the line stays visible
+      lines.push({
+        id: null,
+        session_id: sessionId,
+        color: myColor,
+        points: currentPoints,
+      });
       wsSend({ type: "draw_end", points: currentPoints });
     }
     currentPoints = [];
