@@ -153,6 +153,8 @@ class TestActivityTrackingWebSocket:
             app.main.manager.last_activity[sid_uuid] = 0
 
             ws.send_text(json.dumps({"type": "draw_start", "x": 0, "y": 0}))
+            # Send a follow-up message and verify state after it processes
+            ws.send_text(json.dumps({"type": "cursor_move", "x": 1, "y": 1}))
             assert app.main.manager.last_activity[sid_uuid] > 0
 
     def test_draw_end_updates_activity(self, ws_client):
@@ -168,6 +170,8 @@ class TestActivityTrackingWebSocket:
                 "type": "draw_end",
                 "points": [{"x": 0, "y": 0}, {"x": 10, "y": 10}],
             }))
+            # Send a follow-up message and verify state after it processes
+            ws.send_text(json.dumps({"type": "cursor_move", "x": 1, "y": 1}))
             assert app.main.manager.last_activity[sid_uuid] > 0
 
     def test_users_list_includes_last_active(self, ws_client):
