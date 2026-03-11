@@ -420,6 +420,12 @@
     wsSend({ type: "delete_my_lines" });
   };
 
+  const helpOverlay = document.getElementById("help-overlay");
+  document.getElementById("btn-help").onclick = () => helpOverlay.hidden = false;
+  document.getElementById("help-close").onclick = () => helpOverlay.hidden = true;
+  helpOverlay.addEventListener("click", (e) => { if (e.target === helpOverlay) helpOverlay.hidden = true; });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") helpOverlay.hidden = true; });
+
   // ── WebSocket ─────────────────────────────────────────────────────────
 
   function wsSend(obj) {
