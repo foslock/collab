@@ -1,6 +1,8 @@
 import json
+import time
 import uuid
 import asyncio
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -16,6 +18,9 @@ from app.names import generate_name
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
 SESSION_EXPIRY_DAYS = 30
+RATE_LIMIT_LINES = 100       # max lines per window
+RATE_LIMIT_WINDOW = 60       # seconds
+ACTIVITY_TIMEOUT = 10        # seconds before a user is considered inactive
 
 # Module-level engine/session — can be overridden by tests
 engine = create_db_engine()
@@ -30,15 +35,46 @@ class ConnectionManager:
         self.active: dict[uuid.UUID, WebSocket] = {}
         # session_id -> {name, color, x, y}
         self.cursors: dict[uuid.UUID, dict] = {}
+        # session_id -> last activity timestamp (time.monotonic())
+        self.last_activity: dict[uuid.UUID, float] = {}
+        # Rate limiting: session_id -> list of timestamps for draw_end events
+        self.line_timestamps: dict[uuid.UUID, list[float]] = defaultdict(list)
 
     async def connect(self, session_id: uuid.UUID, ws: WebSocket, name: str, color: str):
         await ws.accept()
         self.active[session_id] = ws
         self.cursors[session_id] = {"name": name, "color": color, "x": 0, "y": 0}
+        self.last_activity[session_id] = time.monotonic()
 
     def disconnect(self, session_id: uuid.UUID):
         self.active.pop(session_id, None)
         self.cursors.pop(session_id, None)
+        self.last_activity.pop(session_id, None)
+        self.line_timestamps.pop(session_id, None)
+
+    def touch_activity(self, session_id: uuid.UUID):
+        """Mark a user as recently active."""
+        self.last_activity[session_id] = time.monotonic()
+
+    def check_rate_limit(self, session_id: uuid.UUID) -> tuple[bool, int]:
+        """Check if user can draw another line. Returns (allowed, retry_after_seconds)."""
+        now = time.monotonic()
+        window_start = now - RATE_LIMIT_WINDOW
+        # Prune old timestamps
+        timestamps = self.line_timestamps[session_id]
+        self.line_timestamps[session_id] = [t for t in timestamps if t > window_start]
+        timestamps = self.line_timestamps[session_id]
+
+        if len(timestamps) >= RATE_LIMIT_LINES:
+            # How long until the oldest entry in the window expires
+            retry_after = int(timestamps[0] - window_start) + 1
+            return False, retry_after
+
+        return True, 0
+
+    def record_line(self, session_id: uuid.UUID):
+        """Record a line creation for rate limiting."""
+        self.line_timestamps[session_id].append(time.monotonic())
 
     async def broadcast(self, message: dict, exclude: uuid.UUID | None = None):
         data = json.dumps(message)
@@ -54,8 +90,13 @@ class ConnectionManager:
             self.disconnect(sid)
 
     def active_users(self) -> list[dict]:
+        now = time.monotonic()
         return [
-            {"session_id": str(sid), **info}
+            {
+                "session_id": str(sid),
+                "last_active": now - self.last_activity.get(sid, now),
+                **info,
+            }
             for sid, info in self.cursors.items()
         ]
 
@@ -186,6 +227,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
             if msg_type == "cursor_move":
                 manager.cursors[sid]["x"] = data["x"]
                 manager.cursors[sid]["y"] = data["y"]
+                manager.touch_activity(sid)
                 await manager.broadcast(
                     {"type": "cursor_move", "session_id": str(sid),
                      "name": name, "color": color,
@@ -194,6 +236,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                 )
 
             elif msg_type == "draw_start":
+                manager.touch_activity(sid)
                 await manager.broadcast(
                     {"type": "draw_start", "session_id": str(sid),
                      "color": color, "x": data["x"], "y": data["y"]},
@@ -201,6 +244,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                 )
 
             elif msg_type == "draw_move":
+                manager.touch_activity(sid)
                 await manager.broadcast(
                     {"type": "draw_move", "session_id": str(sid),
                      "color": color, "x": data["x"], "y": data["y"]},
@@ -208,9 +252,21 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                 )
 
             elif msg_type == "draw_end":
+                manager.touch_activity(sid)
+
+                # Rate limiting check
+                allowed, retry_after = manager.check_rate_limit(sid)
+                if not allowed:
+                    await ws.send_text(json.dumps({
+                        "type": "rate_limited",
+                        "retry_after": retry_after,
+                    }))
+                    continue
+
                 # Persist the completed line
                 points = data.get("points", [])
                 if points:
+                    manager.record_line(sid)
                     async with async_session() as db:
                         line = Line(
                             session_id=sid, color=color, points=points
