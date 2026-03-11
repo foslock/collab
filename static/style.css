@@ -145,10 +145,37 @@ html, body {
   justify-content: center;
   font-size: 18px;
   transition: background 0.15s;
+  position: relative;
 }
 
 #controls button:hover {
   background: rgba(255,255,255,0.18);
+}
+
+/* ── Button tooltips ─────────────────────────────────────────────── */
+
+#controls button[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: rgba(12, 12, 28, 0.95);
+  color: #e0e0e0;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid rgba(255,255,255,0.12);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+  z-index: 150;
+}
+
+#controls button[data-tooltip]:hover::after {
+  opacity: 1;
 }
 
 #btn-delete {

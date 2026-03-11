@@ -275,6 +275,11 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                         await db.commit()
                         await db.refresh(line)
                         line_id = str(line.id)
+                    # Confirm the line_id back to the sender
+                    await ws.send_text(json.dumps({
+                        "type": "draw_confirmed",
+                        "line_id": line_id,
+                    }))
                 else:
                     line_id = None
 
@@ -284,6 +289,24 @@ async def websocket_endpoint(ws: WebSocket, session_id: str = Query(...)):
                      "points": points},
                     exclude=sid,
                 )
+
+            elif msg_type == "undo_last_line":
+                async with async_session() as db:
+                    result = await db.execute(
+                        select(Line)
+                        .where(Line.session_id == sid)
+                        .order_by(Line.created_at.desc())
+                        .limit(1)
+                    )
+                    last_line = result.scalar_one_or_none()
+                    if last_line:
+                        line_id = str(last_line.id)
+                        await db.execute(delete(Line).where(Line.id == last_line.id))
+                        await db.commit()
+                        await manager.broadcast(
+                            {"type": "line_deleted", "line_id": line_id,
+                             "session_id": str(sid)},
+                        )
 
             elif msg_type == "delete_my_lines":
                 async with async_session() as db:
