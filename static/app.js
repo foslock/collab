@@ -12,6 +12,7 @@
   // Canvas transform (pan / zoom)
   let camX = 0, camY = 0, zoom = 1;
   const MIN_ZOOM = 0.1, MAX_ZOOM = 5;
+  const ACTIVITY_TIMEOUT = 10; // seconds — must match server's ACTIVITY_TIMEOUT
 
   // Drawing state
   let drawing = false;
