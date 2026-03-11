@@ -249,8 +249,12 @@
   function renderUsers(userList) {
     const others = userList.filter(u => u.session_id !== sessionId);
 
-    // Sort: active users first (most recently active first), then inactive
+    // Sort: canvas owner first, then active users (most recently active first), then inactive
     others.sort((a, b) => {
+      const aOwner = a.session_id === ownerSessionId;
+      const bOwner = b.session_id === ownerSessionId;
+      if (aOwner && !bOwner) return -1;
+      if (!aOwner && bOwner) return 1;
       const aActive = isActive(a.session_id);
       const bActive = isActive(b.session_id);
       if (aActive && !bActive) return -1;
@@ -618,6 +622,8 @@
     // Reset view
     camX = 0; camY = 0; zoom = 1;
     ownerSessionId = null;
+    isCanvasOwner = false;
+    clearCanvasBtn.hidden = true;
 
     currentCanvasHash = hash;
     history.pushState(null, "", `/canvas/${hash}`);
