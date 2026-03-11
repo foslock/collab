@@ -140,7 +140,8 @@ class TestActivityTrackingWebSocket:
             app.main.manager.last_activity[sid_uuid] = 0
 
             ws.send_text(json.dumps({"type": "cursor_move", "x": 50, "y": 50}))
-            # Give the server a moment to process
+            # Send a follow-up message to force processing of the previous one
+            ws.send_text(json.dumps({"type": "cursor_move", "x": 51, "y": 51}))
             assert app.main.manager.last_activity[sid_uuid] > 0
 
     def test_draw_start_updates_activity(self, ws_client):
